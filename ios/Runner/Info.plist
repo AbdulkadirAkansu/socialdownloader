@@ -4,6 +4,10 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+    <string>Galleryerişimiiçinfotoğrafeklemeiznigerekiyor.</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>Galeridenfotoğrafseçmekiçinerişimiznigerekiyor.</string>
 	<key>CFBundleDisplayName</key>
 	<string>Socialdownloader</string>
 	<key>CFBundleExecutable</key>
