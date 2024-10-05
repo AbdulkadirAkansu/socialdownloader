@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:ffmpeg_kit_flutter/ffmpeg_kit.dart';
 import 'package:flutter/material.dart';
 import 'package:socialdownloader/models/video_model.dart';
+import 'package:socialdownloader/services/permission_service.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
@@ -11,10 +12,10 @@ import 'package:permission_handler/permission_handler.dart';
 class VideoService {
   static YoutubeExplode yt = YoutubeExplode();
 
-  // Video detaylarını al
+
   static Future<VideoModel> getVideoDetails(String videoUrl) async {
     try {
-      final videoId = parseVideoId(videoUrl); // Yeniden adlandırıldı
+      final videoId = parseVideoId(videoUrl);
       if (videoId == null) throw Exception("Geçersiz Video URL'si");
 
       final video = await yt.videos.get(videoId);
@@ -35,15 +36,13 @@ class VideoService {
  static Future<void> downloadAndMerge(String videoUrl, String fileName, Function(double) onProgress) async {
   try {
     final videoId = parseVideoId(videoUrl);
-    if (videoId == null) throw Exception("Geçersiz Video URL'si");
+    if (videoId == null) throw Exception("Invalid video URL");
 
     final manifest = await yt.videos.streamsClient.getManifest(videoId);
 
-    // Video ve ses stream'lerini al
     final videoStreamInfo = manifest.videoOnly.withHighestBitrate();
     final audioStreamInfo = manifest.audioOnly.withHighestBitrate();
 
-    // Geçici indirme yolu
     final dir = await getTemporaryDirectory();
     final videoSavePath = '${dir.path}/$fileName-video.mp4';
     final audioSavePath = '${dir.path}/$fileName-audio.mp3';
@@ -51,19 +50,26 @@ class VideoService {
 
     final dio = Dio();
 
-    // Video ve ses dosyalarını indir
-    await dio.download(videoStreamInfo.url.toString(), videoSavePath);
+    await dio.download(
+      videoStreamInfo.url.toString(),
+      videoSavePath,
+      onReceiveProgress: (received, total) {
+        if (total != -1) {
+          double progress = received / total;
+          onProgress(progress);  
+        }
+      },
+    );
+
     await dio.download(audioStreamInfo.url.toString(), audioSavePath);
 
-    print("Video ve ses indirildi. Şimdi birleştiriliyor...");
+    print("Merging video and audio...");
 
-    // Video ve sesi FFmpeg ile birleştir
     await FFmpegKit.execute(
         "-i $videoSavePath -i $audioSavePath -c:v copy -c:a aac -strict experimental $outputSavePath");
 
-    print("Birleştirme tamamlandı: $outputSavePath");
+    print("Merge completed: $outputSavePath");
 
-    // Birleştirilen dosyayı galeriye kaydet
     await SaverGallery.saveFile(
       file: outputSavePath,
       name: '$fileName-merged',
@@ -71,64 +77,59 @@ class VideoService {
       androidRelativePath: 'Movies/SocialDownloader',
     );
 
-    print("Birleştirilmiş video başarıyla indirildi.");
+    print("Merged video saved successfully.");
+    onProgress(1.0);  
   } catch (e) {
-    print("Video ve ses birleştirme hatası: $e");
-    throw Exception('Video ve ses birleştirme hatası: $e');
+    print("Error during video and audio merging: $e");
+    throw Exception('Error during merging: $e');
   }
 }
 
-  // Video ID'sini URL'den al
-  static String? parseVideoId(String url) {
-    final uri = Uri.tryParse(url);
-    if (uri == null) return null;
-    if (uri.host.contains('youtube.com')) {
-      return uri.queryParameters['v'];
-    } else if (uri.host.contains('youtu.be')) {
-      return uri.pathSegments.isNotEmpty ? uri.pathSegments[0] : null;
-    }
-    return null;
-  }
-
   // Video indir
-  static Future<void> downloadVideo(String videoUrl, String fileName) async {
-    try {
-      final videoId = parseVideoId(videoUrl); // Yeniden adlandırıldı
-      final manifest = await yt.videos.streamsClient.getManifest(videoId!);
-      final streamInfo = manifest.muxed.withHighestBitrate(); // En yüksek bitrate ile formatı alıyoruz
-      final dir = await getTemporaryDirectory();
-      final savePath = '${dir.path}/$fileName.mp4';
-      final dio = Dio();
+static Future<void> downloadVideo(String videoUrl, String fileName) async {
+  bool hasPermission = await PermissionService.requestAllPermissions();
 
-      print("Video indirilmeye başlandı: $savePath");
-
-      await dio.download(
-        streamInfo.url.toString(),
-        savePath,
-      );
-
-      // Video başarıyla indirildikten sonra galeriye kaydet
-      await SaverGallery.saveFile(
-        file: savePath,
-        name: fileName,
-        androidExistNotSave: false,
-        androidRelativePath: 'Movies/SocialDownloader',
-      );
-      print("Video başarıyla indirildi ve galeriye kaydedildi.");
-    } catch (e) {
-      print("Video indirme hatası: $e");
-      throw Exception('Video indirme hatası: $e');
-    }
+  if (!hasPermission) {
+    print("Gerekli izinler verilmedi.");
+    return; 
   }
 
- // Video ve ses stream'lerini ayrı alarak birleştiriyoruz
+  try {
+    final videoId = parseVideoId(videoUrl);
+    final manifest = await yt.videos.streamsClient.getManifest(videoId!);
+    final streamInfo = manifest.muxed.withHighestBitrate();
+    final dir = await getTemporaryDirectory();
+    final savePath = '${dir.path}/$fileName.mp4';
+    final dio = Dio();
+
+    print("Video indirilmeye başlandı: $savePath");
+
+    await dio.download(
+      streamInfo.url.toString(),
+      savePath,
+    );
+
+    await SaverGallery.saveFile(
+      file: savePath,
+      name: fileName,
+      androidExistNotSave: false,
+      androidRelativePath: 'Movies/SocialDownloader',
+    );
+
+    print("Video başarıyla indirildi ve galeriye kaydedildi.");
+  } catch (e) {
+    print("Video indirme hatası: $e");
+    throw Exception('Video indirme hatası: $e');
+  }
+}
+
+
   static Future<void> downloadAudioAndVideo(
       String videoUrl, String fileName, Function(double) onProgress) async {
     try {
       final videoId = parseVideoId(videoUrl);
       final manifest = await yt.videos.streamsClient.getManifest(videoId!);
 
-      // En yüksek çözünürlükteki video ve ses stream'lerini alıyoruz
       final videoStreamInfo = manifest.videoOnly.withHighestBitrate();
       final audioStreamInfo = manifest.audioOnly.withHighestBitrate();
 
@@ -139,12 +140,10 @@ class VideoService {
 
       final dio = Dio();
 
-      // Video ve ses dosyalarını indiriyoruz
       print("Video indirilmeye başlandı: $videoSavePath");
       await dio.download(videoStreamInfo.url.toString(), videoSavePath);
       await dio.download(audioStreamInfo.url.toString(), audioSavePath);
 
-      // İndirme ilerlemesini takip etmek için progress fonksiyonu
       dio.download(
         videoStreamInfo.url.toString(),
         videoSavePath,
@@ -158,7 +157,6 @@ class VideoService {
       print("Video başarıyla indirildi: $videoSavePath");
       print("Ses başarıyla indirildi: $audioSavePath");
 
-      // Galeriye kaydediyoruz
       await SaverGallery.saveFile(
         file: videoSavePath,
         name: '$fileName - Video',
@@ -180,58 +178,109 @@ class VideoService {
     }
   }
 
- // Format ve kalite seçimi
+
 static Future<void> showFormatSelectionDialog(
     BuildContext context, String videoUrl, Function(double) onProgress) async {
-  final videoId = parseVideoId(videoUrl);
+  final videoId = VideoService.parseVideoId(videoUrl);
   if (videoId == null) {
+    print("Video ID not found.");
     return;
   }
 
   try {
-    final manifest = await yt.videos.streamsClient.getManifest(videoId);
-    final videoOnlyStreams = manifest.videoOnly.where((stream) => stream.container.name == 'mp4'); // Sadece MP4 formatı
-    final audioOnlyStreams = manifest.audioOnly.where((stream) => stream.container.name == 'mp4'); // Sadece MP4 formatı
 
-    showDialog(
+
+    final manifest = await yt.videos.streamsClient.getManifest(videoId);
+    print("Manifest received: ${manifest.videoOnly}");
+    final videoOnlyStreams = manifest.videoOnly
+
+        .where((stream) => stream.container.name == 'mp4')
+        .toList();
+    if (videoOnlyStreams.isEmpty) {
+      print("No suitable video streams found.");
+      return;
+    }
+
+    showModalBottomSheet(
       context: context,
+      backgroundColor: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
       builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text('Format ve Kalite Seçin'),
-          content: SingleChildScrollView(
-            child: Column(
-              children: [
-                Text('Ses ve Video Birleşik (MP4 tercih edilir):'),
-                ...videoOnlyStreams.map((stream) {
-                  return ListTile(
-                    title: Text('${stream.videoQualityLabel} - ${stream.container.name}'),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _downloadSelectedVideoAndAudio(
-                        context,
-                        stream.url.toString(),
-                        audioOnlyStreams.first.url.toString(),
-                        stream.container.name,
-                        onProgress
-                      );
-                    },
-                  );
-                }).toList(),
-              ],
-            ),
+        return Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 5,
+                  decoration: BoxDecoration(
+                    color: Colors.grey,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+              SizedBox(height: 10),
+              Text(
+                'Select Format and Quality',
+                style: TextStyle(
+                  color: Colors.black,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              SizedBox(height: 10),
+              Expanded(
+                child: ListView(
+                  children: videoOnlyStreams.map((stream) {
+                    return ListTile(
+                      title: Text(
+                        '${stream.videoQualityLabel} - ${stream.container.name}',
+                        style: TextStyle(color: Colors.black),
+                      ),
+                      onTap: () async {
+                        Navigator.pop(context); 
+                        print("Selected format: ${stream.videoQualityLabel}");
+
+                        String fileName = 'downloaded_video_${stream.videoQualityLabel}';
+                        await VideoService.downloadAndMerge(
+                          videoUrl,
+                          fileName,
+                          onProgress,
+                        );
+                        onProgress(1.0);
+                      },
+                    );
+                  }).toList(),
+                ),
+              ),
+            ],
           ),
         );
       },
     );
   } catch (e) {
-    print('Kalite seçeneklerini alma hatası: $e');
-    throw Exception('Kalite seçenekleri alınamadı: $e');
+    print("Error fetching quality options: $e");
   }
 }
 
 
-  // Video ve sesin ayrı ayrı indirildiği birleştirme fonksiyonu
- static Future<void> _downloadSelectedVideoAndAudio(
+  static String? parseVideoId(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return null;
+    if (uri.host.contains('youtube.com')) {
+      return uri.queryParameters['v'];
+    } else if (uri.host.contains('youtu.be')) {
+      return uri.pathSegments.isNotEmpty ? uri.pathSegments[0] : null;
+    }
+    return null;
+  }
+
+static Future<void> _downloadSelectedVideoAndAudio(
     BuildContext context, String videoUrl, String audioUrl, String fileType, Function(double) onProgress) async {
   final dir = await getTemporaryDirectory();
   final videoSavePath = '${dir.path}/video_download.$fileType';
@@ -239,23 +288,20 @@ static Future<void> showFormatSelectionDialog(
   final outputSavePath = '${dir.path}/video_audio_merged.mp4';
   final dio = Dio();
 
-  // Video ve ses dosyalarını indir
   await dio.download(
     videoUrl,
     videoSavePath,
     onReceiveProgress: (received, total) {
       if (total != -1) {
-        onProgress(received / total);
+        onProgress(received / total);  
       }
     },
   );
   await dio.download(audioUrl, audioSavePath);
 
-  // Video ve ses birleştirilir
   await FFmpegKit.execute(
       "-i $videoSavePath -i $audioSavePath -c:v copy -c:a aac -strict experimental $outputSavePath");
 
-  // Birleştirilmiş dosya galeriye kaydedilir
   await SaverGallery.saveFile(
     file: outputSavePath,
     name: 'video_audio_merged',
@@ -266,9 +312,7 @@ static Future<void> showFormatSelectionDialog(
   print("Video ve ses başarıyla birleştirildi ve kaydedildi.");
 }
 
-
-  // Video indirme işlemi ile progress (yüzde) callback'i
-  static Future<String> downloadVideoWithProgress( // Yeniden adlandırıldı
+  static Future<String> downloadVideoWithProgress( 
       String videoUrl, String fileName, Function(double) onProgress) async {
     try {
       final dio = Dio();
@@ -280,7 +324,6 @@ static Future<void> showFormatSelectionDialog(
       final externalDir = await getTemporaryDirectory();
       final savePath = '${externalDir.path}/$fileName';
 
-      // İndirme işlemi başlatılıyor
       await dio.download(
         videoUrl,
         savePath,
@@ -293,7 +336,6 @@ static Future<void> showFormatSelectionDialog(
 
       print("Video başarıyla indirildi: $savePath");
 
-      // Galeriye kaydetme işlemi
       await SaverGallery.saveFile(
         file: savePath,
         name: fileName,
